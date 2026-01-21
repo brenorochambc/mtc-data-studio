@@ -6,7 +6,7 @@ import io
 from datetime import datetime
 
 # Configuração da Página
-st.set_page_config(page_title="MTC Data Studio - Permanente", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="MTC Data Studio - Elite", page_icon="🛠️", layout="wide")
 
 # Estilo Customizado
 st.markdown("""
@@ -34,10 +34,21 @@ def clean_column_name(name):
     name = re.sub(r'_+', '_', name)
     return name.strip('_')
 
+def format_phone(val):
+    if pd.isna(val):
+        return ""
+    # Converte para string e remove o .0 se existir
+    s = str(val).strip()
+    if s.endswith('.0'):
+        s = s[:-2]
+    # Remove qualquer caractere que não seja número
+    s = re.sub(r'\D', '', s)
+    return s
+
 # Título e Descrição
-st.title("🛠️ MTC Data Studio")
+st.title("🛠️ MTC Data Studio - Versão Elite")
 st.subheader("Sistema Universal de Limpeza e Engenharia de Dados")
-st.markdown("Suba qualquer CSV de pipeline e personalize quais colunas e tags você deseja transformar em métricas.")
+st.markdown("Personalize colunas, defina tipos de dados e exploda tags para métricas fidedignas.")
 
 # 1. Upload do Arquivo
 uploaded_file = st.file_uploader("Arraste seu CSV bruto aqui", type="csv")
@@ -61,36 +72,50 @@ if uploaded_file is not None:
             st.header("⚙️ Configurações")
             
             # Seleção de Colunas Originais
-            st.subheader("1. Colunas do CSV")
+            st.subheader("1. Seleção de Colunas")
             selected_cols = st.multiselect(
                 "Quais colunas você deseja manter?",
                 options=initial_cols,
-                default=[c for c in initial_cols if c.lower() in ['contact name', 'phone', 'email', 'stage', 'status', 'status etapa', 'opportunity id', 'tags', 'updated on']]
+                default=[c for c in initial_cols if c.lower() in ['contact name', 'phone', 'email', 'stage', 'status', 'status etapa', 'opportunity id', 'tags', 'updated on', 'created on']]
             )
             
-            # Seleção de Tags para Explosão
-            st.subheader("2. Explosão de Tags")
-            if any(c.lower() == 'tags' for c in selected_cols):
-                tag_col = next((c for c in selected_cols if c.lower() == 'tags'), None)
-                
-                if tag_col:
-                    all_tags = []
-                    df_raw[tag_col].dropna().apply(lambda x: all_tags.extend([t.strip().lower() for t in str(x).split(',') if t.strip()]))
-                    unique_tags = sorted(list(set(all_tags)))
+            # Mapeamento de Tipos (Sua Sugestão!)
+            st.subheader("2. Mapeamento de Tipos")
+            col_types = {}
+            if selected_cols:
+                for col in selected_cols:
+                    # Sugestão automática baseada no nome
+                    default_type = "Texto"
+                    if any(word in col.lower() for word in ['date', 'on', 'at', 'criado', 'atualizado']):
+                        default_type = "Data"
+                    elif any(word in col.lower() for word in ['phone', 'telefone', 'celular', 'whatsapp']):
+                        default_type = "Telefone"
                     
-                    selected_tags = st.multiselect(
-                        "Quais tags devem virar colunas individuais?",
-                        options=unique_tags,
-                        help="Cada tag selecionada criará uma nova coluna com 0 ou 1."
+                    col_types[col] = st.selectbox(
+                        f"Tipo para: {col}",
+                        options=["Texto", "Data", "Telefone", "Número"],
+                        index=["Texto", "Data", "Telefone", "Número"].index(default_type),
+                        key=f"type_{col}"
                     )
-                else:
-                    selected_tags = []
+
+            # Seleção de Tags para Explosão
+            st.subheader("3. Explosão de Tags")
+            tag_col = next((c for c in selected_cols if c.lower() == 'tags'), None)
+            if tag_col:
+                all_tags = []
+                df_raw[tag_col].dropna().apply(lambda x: all_tags.extend([t.strip().lower() for t in str(x).split(',') if t.strip()]))
+                unique_tags = sorted(list(set(all_tags)))
+                
+                selected_tags = st.multiselect(
+                    "Quais tags devem virar colunas?",
+                    options=unique_tags
+                )
             else:
-                st.warning("Selecione a coluna 'tags' acima para habilitar a explosão.")
+                st.warning("Selecione a coluna 'tags' para explodir.")
                 selected_tags = []
 
             # Opções de Limpeza
-            st.subheader("3. Regras de Limpeza")
+            st.subheader("4. Regras de Limpeza")
             do_dedup = st.checkbox("Remover duplicatas (pelo Opportunity ID)", value=True)
             do_snake_case = st.checkbox("Converter nomes para snake_case", value=True)
 
@@ -100,17 +125,32 @@ if uploaded_file is not None:
             # PROCESSAMENTO
             df_proc = df_raw[selected_cols].copy()
             
+            # Aplicar Tipagem Manual
+            for col, t in col_types.items():
+                if t == "Data":
+                    df_proc[col] = pd.to_datetime(df_proc[col], errors='coerce').dt.strftime('%Y-%m-%d')
+                elif t == "Telefone":
+                    df_proc[col] = df_proc[col].apply(format_phone)
+                elif t == "Número":
+                    df_proc[col] = pd.to_numeric(df_proc[col], errors='coerce')
+                else:
+                    df_proc[col] = df_proc[col].fillna('').astype(str).str.strip()
+
+            # Padronização de Nomes de Colunas
             if do_snake_case:
                 df_proc.columns = [clean_column_name(c) for c in df_proc.columns]
             
+            # Deduplicação
             if do_dedup:
                 id_col = next((c for c in df_proc.columns if 'opportunity_id' in c or 'id' in c.lower()), None)
-                update_col = next((c for c in df_proc.columns if 'updated' in c.lower()), None)
+                update_col = next((c for c in df_proc.columns if 'updated' in c or 'atualizado' in c), None)
                 if id_col:
                     if update_col:
-                        df_proc = df_proc.sort_values(update_col, ascending=False)
+                        temp_date = pd.to_datetime(df_proc[update_col], errors='coerce')
+                        df_proc = df_proc.iloc[temp_date.argsort()[::-1]]
                     df_proc = df_proc.drop_duplicates(subset=[id_col], keep='first')
             
+            # Explosão de Tags
             if selected_tags:
                 tag_col_proc = next((c for c in df_proc.columns if 'tags' in c.lower()), None)
                 if tag_col_proc:
@@ -139,4 +179,4 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"Erro ao processar: {e}")
 else:
-    st.info("👋 Bem-vindo! Suba um arquivo CSV para começar a configurar sua limpeza de dados.")
+    st.info("👋 Bem-vindo! Suba um arquivo CSV para começar.")
